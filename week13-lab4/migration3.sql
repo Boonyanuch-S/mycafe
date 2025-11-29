@@ -1,0 +1,103 @@
+-- 4. Permissions Table
+CREATE TABLE permissions (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    description TEXT,
+    resource VARCHAR(50) NOT NULL,
+    action VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_permissions_name ON permissions(name);
+CREATE INDEX idx_permissions_resource ON permissions(resource);
+
+-- 5. Role-Permission Assignment
+CREATE TABLE role_permissions (
+    role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    permission_id INTEGER NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+    granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (role_id, permission_id)
+);
+
+CREATE INDEX idx_role_perms_role ON role_permissions(role_id);
+CREATE INDEX idx_role_perms_perm ON role_permissions(permission_id);
+
+-- Seed Permissions
+INSERT INTO permissions (name, description, resource, action) VALUES
+-- Drinks permissions
+('drinks:read', 'Can view drinks', 'drinks', 'read'),
+('drinks:create', 'Can create drinks', 'drinks', 'create'),
+('drinks:update', 'Can update drinks', 'drinks', 'update'),
+('drinks:delete', 'Can delete drinks', 'drinks', 'delete'),
+
+-- Foods permissions
+('foods:read', 'Can view foods', 'foods', 'read'),
+('foods:create', 'Can create foods', 'foods', 'create'),
+('foods:update', 'Can update foods', 'foods', 'update'),
+('foods:delete', 'Can delete foods', 'foods', 'delete'),
+
+-- Desserts permissions
+('desserts:read', 'Can view desserts', 'desserts', 'read'),
+('desserts:create', 'Can create desserts', 'desserts', 'create'),
+('desserts:update', 'Can update desserts', 'desserts', 'update'),
+('desserts:delete', 'Can delete desserts', 'desserts', 'delete'),
+
+-- Users permissions
+('users:read', 'Can view users', 'users', 'read'),
+('users:create', 'Can create users', 'users', 'create'),
+('users:update', 'Can update users', 'users', 'update'),
+('users:delete', 'Can delete users', 'users', 'delete'),
+
+-- Roles permissions
+('roles:read', 'Can view roles', 'roles', 'read'),
+('roles:assign', 'Can assign roles to users', 'roles', 'assign'),
+('roles:create', 'Can create new roles', 'roles', 'create'),
+('roles:delete', 'Can delete roles', 'roles', 'delete'),
+
+-- Reports permissions
+('reports:financial', 'Can view financial reports', 'reports', 'financial'),
+('reports:analytics', 'Can view analytics', 'reports', 'analytics');
+
+-- Assign Permissions to Roles
+
+-- Admin: ทุก permissions
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT
+    (SELECT id FROM roles WHERE name = 'admin'),
+    id
+FROM permissions;
+
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT
+    (SELECT id FROM roles WHERE name = 'editor'),
+    id
+FROM permissions
+WHERE name IN (
+    -- Drinks
+    'drinks:read', 'drinks:create', 'drinks:update',
+
+    -- Foods
+    'foods:read', 'foods:create', 'foods:update',
+
+    -- Desserts
+    'desserts:read', 'desserts:create', 'desserts:update',
+
+    -- Allow editor to see users
+    'users:read'
+);
+
+-- Viewer: read-only
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT
+    (SELECT id FROM roles WHERE name = 'viewer'),
+    id
+FROM permissions
+WHERE action = 'read';
+
+-- User books:read
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT
+    (SELECT id FROM roles WHERE name = 'user'),
+    id
+FROM permissions
+WHERE name IN ('drinks:read', 'foods:read', 'desserts:read');
