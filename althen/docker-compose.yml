@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: cafe_postgres
+    environment:
+      POSTGRES_DB: cafe_db
+      POSTGRES_USER: cafe_user
+      POSTGRES_PASSWORD: cafe_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: cafe_app
+    depends_on:
+      - postgres
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: cafe_user
+      DB_PASSWORD: cafe_password
+      DB_NAME: cafe_db
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

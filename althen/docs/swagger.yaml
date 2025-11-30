@@ -1,0 +1,10 @@
+basePath: /api/v1
+host: localhost:8080
+info:
+  contact: {}
+  description: Cafe Menu API with JWT Authentication & RBAC
+  title: Cafe API with Authentication
+  version: "1.0"
+paths: {}
+swagger: "2.0"
+

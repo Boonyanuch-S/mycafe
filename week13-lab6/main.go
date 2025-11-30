@@ -2,636 +2,735 @@ package main
 
 import (
     _ "week13-lab6/docs"
-    "fmt"
-    "os"
-    "database/sql"
-    _ "github.com/lib/pq"
-    "log"
-    "github.com/gin-gonic/gin"
-    "net/http"
-    "time"
-    "strings"
-    "encoding/json"
-    swaggerFiles "github.com/swaggo/files"
-    ginSwagger "github.com/swaggo/gin-swagger"
-    "github.com/gin-contrib/cors"
-    "github.com/golang-jwt/jwt/v5"
-    "golang.org/x/crypto/bcrypt"
+	"fmt"
+	"os"
+	"database/sql"
+	_ "github.com/lib/pq"
+	"log"
+	"github.com/gin-gonic/gin"
+	"net/http"
+	"time"
+	"strings"
+	"encoding/json"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
+	"github.com/gin-contrib/cors"
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
-// ===================== Utility =====================
+// ===================== Response Types =====================
+type ErrorResponse struct {
+	Message string `json:"message"`
+}
+
+// ===================== Book Model =====================
+type Book struct {
+	ID        int       `json:"id"`
+	Title     string    `json:"title"`
+	Author    string    `json:"author"`
+	ISBN      string    `json:"isbn"`
+	Year      int       `json:"year"`
+	Price     float64   `json:"price"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ===================== Auth Models =====================
+type User struct {
+	ID           int       `json:"id"`
+	Username     string    `json:"username"`
+	Email        string    `json:"email"`
+	PasswordHash string    `json:"-"` // ไม่ส่งไปใน JSON
+	IsActive     bool      `json:"is_active"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type LoginRequest struct {
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
+type LoginResponse struct {
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token"`
+	User         UserInfo `json:"user"`
+}
+
+type UserInfo struct {
+	ID       int      `json:"id"`
+	Username string   `json:"username"`
+	Email    string   `json:"email"`
+	Roles    []string `json:"roles"`
+}
+
+type RefreshRequest struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
+}
+
+// ===================== JWT Claims =====================
+type CustomClaims struct {
+	UserID   int      `json:"user_id"`
+	Username string   `json:"username"`
+	Roles    []string `json:"roles"`
+	jwt.RegisteredClaims
+}
+
+
 func getEnv(key, defaultValue string) string {
-    if value := os.Getenv(key); value != "" {
-        return value
-    }
-    return defaultValue
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }
 
 var db *sql.DB
 var jwtSecret = []byte("my-super-secret-key-change-in-production-2024")
 
-// ===================== Error Response =====================
-type ErrorResponse struct {
-    Message string `json:"message"`
-}
-
-// ===================== USER / AUTH MODELS =====================
-type User struct {
-    ID           int       `json:"id"`
-    Username     string    `json:"username"`
-    Email        string    `json:"email"`
-    PasswordHash string    `json:"-"`
-    IsActive     bool      `json:"is_active"`
-    CreatedAt    time.Time `json:"created_at"`
-}
-
-type LoginRequest struct {
-    Username string `json:"username" binding:"required"`
-    Password string `json:"password" binding:"required"`
-}
-
-type LoginResponse struct {
-    AccessToken  string   `json:"access_token"`
-    RefreshToken string   `json:"refresh_token"`
-    User         UserInfo `json:"user"`
-}
-
-type UserInfo struct {
-    ID       int      `json:"id"`
-    Username string   `json:"username"`
-    Email    string   `json:"email"`
-    Roles    []string `json:"roles"`
-}
-
-type RefreshRequest struct {
-    RefreshToken string `json:"refresh_token" binding:"required"`
-}
-
-type CustomClaims struct {
-    UserID   int      `json:"user_id"`
-    Username string   `json:"username"`
-    Roles    []string `json:"roles"`
-    jwt.RegisteredClaims
-}
-
-// ===================== Cafe Models =====================
-type Drink struct {
-    ID          int       `json:"id"`
-    SubCategory string    `json:"sub_category"`
-    Name        string    `json:"name"`
-    DrinkType   string    `json:"drink_type"`
-    Price       float64   `json:"price"`
-    Description string    `json:"description"`
-    CreatedAt   time.Time `json:"created_at"`
-    UpdatedAt   time.Time `json:"updated_at"`
-}
-
-type Food struct {
-    ID          int       `json:"id"`
-    SubCategory string    `json:"sub_category"`
-    Name        string    `json:"name"`
-    Price       float64   `json:"price"`
-    Description string    `json:"description"`
-    CreatedAt   time.Time `json:"created_at"`
-    UpdatedAt   time.Time `json:"updated_at"`
-}
-
-type Dessert struct {
-    ID          int       `json:"id"`
-    SubCategory string    `json:"sub_category"`
-    Name        string    `json:"name"`
-    Price       float64   `json:"price"`
-    Description string    `json:"description"`
-    CreatedAt   time.Time `json:"created_at"`
-    UpdatedAt   time.Time `json:"updated_at"`
-}
-
-// ===================== Password =====================
+// ===================== Password Hashing Functions =====================
 func hashPassword(password string) (string, error) {
-    hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
-    if err != nil {
-        return "", err
-    }
-    return string(hash), nil
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
 }
 
 func verifyPassword(hashedPassword, password string) error {
-    return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
 }
 
-// ===================== JWT =====================
+// ===================== JWT Functions =====================
 func generateAccessToken(userID int, username string, roles []string) (string, error) {
-    expires := time.Now().Add(15 * time.Minute)
+	expirationTime := time.Now().Add(15 * time.Minute)
 
-    claims := &CustomClaims{
-        UserID:   userID,
-        Username: username,
-        Roles:    roles,
-        RegisteredClaims: jwt.RegisteredClaims{
-            ExpiresAt: jwt.NewNumericDate(expires),
-            IssuedAt:  jwt.NewNumericDate(time.Now()),
-            Issuer:    "cafe-api",
-        },
-    }
+	claims := &CustomClaims{
+		UserID:   userID,
+		Username: username,
+		Roles:    roles,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "bookstore-api",
+		},
+	}
 
-    token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-    return token.SignedString(jwtSecret)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtSecret)
 }
 
 func generateRefreshToken(userID int, username string) (string, error) {
-    expires := time.Now().Add(7 * 24 * time.Hour)
+	expirationTime := time.Now().Add(7 * 24 * time.Hour)
 
-    claims := &CustomClaims{
-        UserID:   userID,
-        Username: username,
-        Roles:    []string{},
-        RegisteredClaims: jwt.RegisteredClaims{
-            ExpiresAt: jwt.NewNumericDate(expires),
-            IssuedAt:  jwt.NewNumericDate(time.Now()),
-            Issuer:    "cafe-api",
-        },
-    }
+	claims := &CustomClaims{
+		UserID:   userID,
+		Username: username,
+		Roles:    []string{}, // Refresh token ไม่ต้องเก็บ roles
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "bookstore-api",
+		},
+	}
 
-    token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-    return token.SignedString(jwtSecret)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtSecret)
 }
 
-func verifyToken(tokenStr string) (*CustomClaims, error) {
-    token, err := jwt.ParseWithClaims(tokenStr, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-        if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-            return nil, fmt.Errorf("unexpected signing method")
-        }
-        return jwtSecret, nil
-    })
+func verifyToken(tokenString string) (*CustomClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return jwtSecret, nil
+	})
 
-    if err != nil {
-        return nil, err
-    }
+	if err != nil {
+		return nil, err
+	}
 
-    if claims, ok := token.Claims.(*CustomClaims); ok && token.Valid {
-        return claims, nil
-    }
+	if claims, ok := token.Claims.(*CustomClaims); ok && token.Valid {
+		return claims, nil
+	}
 
-    return nil, fmt.Errorf("invalid token")
+	return nil, fmt.Errorf("invalid token")
 }
 
-// ===================== Database Helpers =====================
+// ===================== Database Helper Functions =====================
 func getUserRoles(userID int) ([]string, error) {
-    rows, err := db.Query(`
-        SELECT r.name
-        FROM roles r
-        JOIN user_roles ur ON r.id = ur.role_id
-        WHERE ur.user_id = $1
-    `, userID)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
+	query := `
+		SELECT r.name
+		FROM roles r
+		JOIN user_roles ur ON r.id = ur.role_id
+		WHERE ur.user_id = $1
+	`
 
-    var roles []string
-    for rows.Next() {
-        var role string
-        rows.Scan(&role)
-        roles = append(roles, role)
-    }
-    return roles, nil
+	rows, err := db.Query(query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var roles []string
+	for rows.Next() {
+		var role string
+		if err := rows.Scan(&role); err != nil {
+			return nil, err
+		}
+		roles = append(roles, role)
+	}
+
+	return roles, nil
 }
 
 func checkUserPermission(userID int, permission string) bool {
-    var count int
-    err := db.QueryRow(`
-        SELECT COUNT(*)
-        FROM permissions p
-        JOIN role_permissions rp ON p.id = rp.permission_id
-        JOIN user_roles ur ON rp.role_id = ur.role_id
-        WHERE ur.user_id = $1 AND p.name = $2
-    `, userID, permission).Scan(&count)
+	query := `
+		SELECT COUNT(*)
+		FROM permissions p
+		JOIN role_permissions rp ON p.id = rp.permission_id
+		JOIN user_roles ur ON rp.role_id = ur.role_id
+		WHERE ur.user_id = $1 AND p.name = $2
+	`
 
-    if err != nil {
-        log.Println("permission error:", err)
-        return false
-    }
+	var count int
+	err := db.QueryRow(query, userID, permission).Scan(&count)
+	if err != nil {
+		log.Printf("Error checking permission: %v", err)
+		return false
+	}
 
-    return count > 0
+	return count > 0
 }
 
 func storeRefreshToken(userID int, token string, expiresAt time.Time) error {
-    _, err := db.Exec(`
-        INSERT INTO refresh_tokens (user_id, token, expires_at)
-        VALUES ($1, $2, $3)
-    `, userID, token, expiresAt)
-    return err
+	query := `
+		INSERT INTO refresh_tokens (user_id, token, expires_at)
+		VALUES ($1, $2, $3)
+	`
+	_, err := db.Exec(query, userID, token, expiresAt)
+	return err
 }
 
 func revokeRefreshToken(token string) error {
-    _, err := db.Exec(`
-        UPDATE refresh_tokens SET revoked_at = NOW()
-        WHERE token = $1 AND revoked_at IS NULL
-    `, token)
-    return err
+	query := `
+		UPDATE refresh_tokens
+		SET revoked_at = NOW()
+		WHERE token = $1 AND revoked_at IS NULL
+	`
+	_, err := db.Exec(query, token)
+	return err
 }
 
 func isRefreshTokenValid(token string) (int, bool) {
-    var userID int
-    err := db.QueryRow(`
-        SELECT user_id
-        FROM refresh_tokens
-        WHERE token = $1 AND revoked_at IS NULL AND expires_at > NOW()
-    `, token).Scan(&userID)
+	query := `
+		SELECT user_id
+		FROM refresh_tokens
+		WHERE token = $1
+		AND expires_at > NOW()
+		AND revoked_at IS NULL
+	`
 
-    if err != nil {
-        return 0, false
-    }
-    return userID, true
+	var userID int
+	err := db.QueryRow(query, token).Scan(&userID)
+	if err != nil {
+		return 0, false
+	}
+
+	return userID, true
 }
 
 func logAudit(userID int, action, resource string, resourceID interface{}, details map[string]interface{}, c *gin.Context) {
-    dJSON, _ := json.Marshal(details)
-    rid := ""
-    if resourceID != nil {
-        rid = fmt.Sprintf("%v", resourceID)
-    }
+	detailsJSON, _ := json.Marshal(details)
 
-    db.Exec(`
-        INSERT INTO audit_logs (user_id, action, resource, resource_id, details, ip_address, user_agent)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
-    `,
-        userID,
-        action,
-        resource,
-        rid,
-        dJSON,
-        c.ClientIP(),
-        c.GetHeader("User-Agent"),
-    )
+	query := `
+		INSERT INTO audit_logs
+		(user_id, action, resource, resource_id, details, ip_address, user_agent)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`
+
+	var resourceIDStr string
+	if resourceID != nil {
+		resourceIDStr = fmt.Sprintf("%v", resourceID)
+	}
+
+	db.Exec(query,
+		userID,
+		action,
+		resource,
+		resourceIDStr,
+		detailsJSON,
+		c.ClientIP(),
+		c.GetHeader("User-Agent"),
+	)
 }
 
-// ===================== Init DB =====================
 func initDB() {
-    host := getEnv("DB_HOST", "")
-    name := getEnv("DB_NAME", "")
-    user := getEnv("DB_USER", "")
-    password := getEnv("DB_PASSWORD", "")
-    port := getEnv("DB_PORT", "")
+	var err error
 
-    conn := fmt.Sprintf(
-        "host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-        host, port, user, password, name,
-    )
+	host := getEnv("DB_HOST", "")
+	name := getEnv("DB_NAME", "")
+	user := getEnv("DB_USER", "")
+	password := getEnv("DB_PASSWORD", "")
+	port := getEnv("DB_PORT", "")
 
-    var err error
-    db, err = sql.Open("postgres", conn)
-    if err != nil {
-        log.Fatal("failed to open db:", err)
-    }
+	conSt := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, name)
+	// fmt.Println(conSt)
+	db, err = sql.Open("postgres", conSt)
+	if err != nil {
+		log.Fatal("failed to open database")
+	}
 
-    db.SetMaxOpenConns(20)
-    db.SetMaxIdleConns(20)
-    db.SetConnMaxLifetime(5 * time.Minute)
+	// กำหนดจำนวน Connection สูงสุด
+	db.SetMaxOpenConns(25)
 
-    if err := db.Ping(); err != nil {
-        log.Fatal("failed to connect db:", err)
-    }
+	// กำหนดจำนวน Idle connection สูงสุด
+	db.SetMaxIdleConns(25)
 
-    log.Println("database connected")
+	// กำหนดอายุของ Connection
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	err = db.Ping()
+	if err != nil {
+		log.Fatal("failed to connect to database", err)
+	}
+	log.Println("successfully connected to database")
 }
 
-// ===================== AUTH HANDLERS =====================
+// ===================== Authentication Endpoints =====================
 func login(c *gin.Context) {
-    var req LoginRequest
-    if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-        return
-    }
+	var req LoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
 
-    var user User
-    err := db.QueryRow(`
-        SELECT id, username, email, password_hash, is_active
-        FROM users WHERE username = $1
-    `, req.Username).Scan(
-        &user.ID,
-        &user.Username,
-        &user.Email,
-        &user.PasswordHash,
-        &user.IsActive,
-    )
+	// ดึงข้อมูล user จาก database
+	var user User
+	query := `
+		SELECT id, username, email, password_hash, is_active
+		FROM users
+		WHERE username = $1
+	`
 
-    if err == sql.ErrNoRows {
-        c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
-        return
-    }
+	err := db.QueryRow(query, req.Username).Scan(
+		&user.ID,
+		&user.Username,
+		&user.Email,
+		&user.PasswordHash,
+		&user.IsActive,
+	)
 
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-        return
-    }
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		return
+	} else if err != nil {
+		log.Printf("Database error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
 
-    if !user.IsActive {
-        c.JSON(http.StatusUnauthorized, gin.H{"error": "account disabled"})
-        return
-    }
+	// ตรวจสอบว่า user active หรือไม่
+	if !user.IsActive {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "account is disabled"})
+		return
+	}
 
-    if verifyPassword(user.PasswordHash, req.Password) != nil {
-        c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
-        return
-    }
+	// ตรวจสอบ password
+	if err := verifyPassword(user.PasswordHash, req.Password); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		return
+	}
 
-    roles, _ := getUserRoles(user.ID)
+	// ดึง roles ของ user
+	roles, err := getUserRoles(user.ID)
+	if err != nil {
+		log.Printf("Error getting roles: %v", err)
+		roles = []string{} // ถ้าดึงไม่ได้ให้เป็น empty array
+	}
 
-    access, _ := generateAccessToken(user.ID, user.Username, roles)
-    refresh, _ := generateRefreshToken(user.ID, user.Username)
+	// สร้าง tokens
+	accessToken, err := generateAccessToken(user.ID, user.Username, roles)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate access token"})
+		return
+	}
 
-    storeRefreshToken(user.ID, refresh, time.Now().Add(7*24*time.Hour))
+	refreshToken, err := generateRefreshToken(user.ID, user.Username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate refresh token"})
+		return
+	}
 
-    db.Exec("UPDATE users SET last_login = NOW() WHERE id = $1", user.ID)
+	// บันทึก refresh token ในฐานข้อมูล
+	expiresAt := time.Now().Add(7 * 24 * time.Hour)
+	if err := storeRefreshToken(user.ID, refreshToken, expiresAt); err != nil {
+		log.Printf("Error storing refresh token: %v", err)
+		// ไม่ return error เพราะ token ยังใช้ได้
+	}
 
-    logAudit(user.ID, "login", "auth", nil, gin.H{"username": user.Username}, c)
+	// อัพเดท last_login
+	db.Exec("UPDATE users SET last_login = NOW() WHERE id = $1", user.ID)
 
-    c.JSON(http.StatusOK, LoginResponse{
-        AccessToken:  access,
-        RefreshToken: refresh,
-        User: UserInfo{
-            ID:       user.ID,
-            Username: user.Username,
-            Email:    user.Email,
-            Roles:    roles,
-        },
-    })
+	// Log audit
+	logAudit(user.ID, "login", "auth", nil, gin.H{
+		"username": user.Username,
+	}, c)
+
+	// ส่ง response
+	c.JSON(http.StatusOK, LoginResponse{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		User: UserInfo{
+			ID:       user.ID,
+			Username: user.Username,
+			Email:    user.Email,
+			Roles:    roles,
+		},
+	})
 }
 
 func refreshTokenHandler(c *gin.Context) {
-    var req RefreshRequest
-    if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-        return
-    }
+	var req RefreshRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
 
-    userID, ok := isRefreshTokenValid(req.RefreshToken)
-    if !ok {
-        c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
-        return
-    }
+	// ตรวจสอบ refresh token
+	userID, valid := isRefreshTokenValid(req.RefreshToken)
+	if !valid {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired refresh token"})
+		return
+	}
 
-    var username string
-    db.QueryRow("SELECT username FROM users WHERE id = $1", userID).Scan(&username)
+	// ดึงข้อมูล user
+	var username string
+	err := db.QueryRow("SELECT username FROM users WHERE id = $1", userID).Scan(&username)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+		return
+	}
 
-    roles, _ := getUserRoles(userID)
+	// ดึง roles
+	roles, err := getUserRoles(userID)
+	if err != nil {
+		roles = []string{}
+	}
 
-    access, _ := generateAccessToken(userID, username, roles)
+	// สร้าง access token ใหม่
+	accessToken, err := generateAccessToken(userID, username, roles)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate access token"})
+		return
+	}
 
-    c.JSON(http.StatusOK, gin.H{"access_token": access})
+	c.JSON(http.StatusOK, gin.H{
+		"access_token": accessToken,
+	})
 }
 
 func logout(c *gin.Context) {
-    var req RefreshRequest
-    if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-        return
-    }
+	// ดึง refresh token จาก request
+	var req RefreshRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
 
-    revokeRefreshToken(req.RefreshToken)
+	// Revoke refresh token
+	if err := revokeRefreshToken(req.RefreshToken); err != nil {
+		log.Printf("Error revoking token: %v", err)
+	}
 
-    if uid, exists := c.Get("user_id"); exists {
-        logAudit(uid.(int), "logout", "auth", nil, nil, c)
-    }
+	// Log audit (ถ้ามี user_id ใน context)
+	if userID, exists := c.Get("user_id"); exists {
+		logAudit(userID.(int), "logout", "auth", nil, nil, c)
+	}
 
-    c.JSON(http.StatusOK, gin.H{"message": "logout success"})
+	c.JSON(http.StatusOK, gin.H{"message": "logged out successfully"})
 }
 
-// ===================== MIDDLEWARE =====================
+// ===================== Middleware =====================
 func authMiddleware() gin.HandlerFunc {
-    return func(c *gin.Context) {
-        auth := c.GetHeader("Authorization")
-        if auth == "" {
-            c.JSON(http.StatusUnauthorized, gin.H{"error": "missing auth header"})
-            c.Abort()
-            return
-        }
+	return func(c *gin.Context) {
+		// ดึง token จาก Authorization header
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authorization header required"})
+			c.Abort()
+			return
+		}
 
-        parts := strings.Split(auth, " ")
-        if len(parts) != 2 || parts[0] != "Bearer" {
-            c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid auth format"})
-            c.Abort()
-            return
-        }
+		// ตรวจสอบ format: "Bearer <token>"
+		parts := strings.Split(authHeader, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header format"})
+			c.Abort()
+			return
+		}
 
-        claims, err := verifyToken(parts[1])
-        if err != nil {
-            c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
-            c.Abort()
-            return
-        }
+		tokenString := parts[1]
 
-        c.Set("user_id", claims.UserID)
-        c.Set("username", claims.Username)
-        c.Set("roles", claims.Roles)
+		// Verify token
+		claims, err := verifyToken(tokenString)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+			c.Abort()
+			return
+		}
 
-        c.Next()
-    }
+		// เก็บข้อมูล user ใน context
+		c.Set("user_id", claims.UserID)
+		c.Set("username", claims.Username)
+		c.Set("roles", claims.Roles)
+
+		c.Next()
+	}
 }
 
 func requirePermission(permission string) gin.HandlerFunc {
-    return func(c *gin.Context) {
-        uid, exists := c.Get("user_id")
-        if !exists || !checkUserPermission(uid.(int), permission) {
-            c.JSON(http.StatusForbidden, gin.H{
-                "error":    "insufficient permission",
-                "required": permission,
-            })
-            c.Abort()
-            return
+	return func(c *gin.Context) {
+		userID, exists := c.Get("user_id")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			c.Abort()
+			return
+		}
+
+		// ตรวจสอบ permission
+		hasPermission := checkUserPermission(userID.(int), permission)
+		if !hasPermission {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":   "insufficient permissions",
+				"required": permission,
+			})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// ===================== Book Handlers =====================
+// @Summary Get all books
+// @Description Get details of books
+// @Tags Books
+// @Produce  json
+// @Success 200  {array}  Book
+// @Failure 500  {object}  ErrorResponse
+// @Router  /books [get]
+func getAllBooks(c *gin.Context) {
+    var rows *sql.Rows
+    var err error
+    // ลูกค้าถาม "มีหนังสืออะไรบ้าง"
+    rows, err = db.Query("SELECT id, title, author, isbn, year, price, created_at, updated_at FROM books")
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+    defer rows.Close() // ต้องปิด rows เสมอ เพื่อคืน Connection กลับ pool
+
+    var books []Book
+    for rows.Next() {
+        var book Book
+        err := rows.Scan(&book.ID, &book.Title, &book.Author, &book.ISBN, &book.Year, &book.Price, &book.CreatedAt, &book.UpdatedAt)
+        if err != nil {
+            // handle error
         }
-        c.Next()
+        books = append(books, book)
     }
+	if books == nil {
+		books = []Book{}
+	}
+
+	c.JSON(http.StatusOK, books)
 }
 
-// ===================== DRINKS =====================
-func getAllDrinks(c *gin.Context) {
-    rows, err := db.Query(`
-        SELECT id, sub_category, name, drink_type, price, description, created_at, updated_at 
-        FROM drinks`)
-    if err != nil {
+func getBook(c *gin.Context) {
+    id := c.Param("id")
+    var book Book
+
+    // QueryRow ใช้เมื่อคาดว่าจะได้ผลลัพธ์ 0 หรือ 1 แถว
+    err := db.QueryRow("SELECT id, title, author FROM books WHERE id = $1", id).Scan(&book.ID, &book.Title, &book.Author)
+
+    if err == sql.ErrNoRows {
+        c.JSON(http.StatusNotFound, gin.H{"error": "book not found"})
+        return
+    } else if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
-    defer rows.Close()
 
-    var list []Drink
-    for rows.Next() {
-        var d Drink
-        rows.Scan(&d.ID, &d.SubCategory, &d.Name, &d.DrinkType, &d.Price, &d.Description, &d.CreatedAt, &d.UpdatedAt)
-        list = append(list, d)
-    }
-    c.JSON(http.StatusOK, list)
+    c.JSON(http.StatusOK, book)
 }
 
-func createDrink(c *gin.Context) {
-    var d Drink
-    if err := c.ShouldBindJSON(&d); err != nil {
+func createBook(c *gin.Context) {
+    var newBook Book
+
+    if err := c.ShouldBindJSON(&newBook); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
 
-    err := db.QueryRow(`
-        INSERT INTO drinks (sub_category,name,drink_type,price,description)
-        VALUES ($1,$2,$3,$4,$5)
-        RETURNING id,created_at,updated_at
-    `, d.SubCategory, d.Name, d.DrinkType, d.Price, d.Description).
-        Scan(&d.ID, &d.CreatedAt, &d.UpdatedAt)
+    // ใช้ RETURNING เพื่อดึงค่าที่ database generate (id, timestamps)
+    var id int
+    var createdAt, updatedAt time.Time
+
+    err := db.QueryRow(
+        `INSERT INTO books (title, author, isbn, year, price)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, created_at, updated_at`,
+        newBook.Title, newBook.Author, newBook.ISBN, newBook.Year, newBook.Price,
+    ).Scan(&id, &createdAt, &updatedAt)
 
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
 
-    uid := c.GetInt("user_id")
-    logAudit(uid, "create", "drinks", d.ID, gin.H{"name": d.Name}, c)
+    newBook.ID = id
+    newBook.CreatedAt = createdAt
+    newBook.UpdatedAt = updatedAt
 
-    c.JSON(http.StatusCreated, d)
+	// Log audit
+	userID := c.GetInt("user_id")
+	logAudit(userID, "create", "books", newBook.ID, gin.H{
+		"title":  newBook.Title,
+		"author": newBook.Author,
+		"isbn":   newBook.ISBN,
+	}, c)
+
+    c.JSON(http.StatusCreated, newBook) // ใช้ 201 Created
 }
 
-// ===================== FOODS =====================
-func getAllFoods(c *gin.Context) {
-    rows, err := db.Query(`
-        SELECT id, sub_category, name, price, description, created_at, updated_at 
-        FROM foods`)
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-        return
-    }
-    defer rows.Close()
+func updateBook(c *gin.Context) {
+	var ID int
 
-    var list []Food
-    for rows.Next() {
-        var f Food
-        rows.Scan(&f.ID, &f.SubCategory, &f.Name, &f.Price, &f.Description, &f.CreatedAt, &f.UpdatedAt)
-        list = append(list, f)
-    }
-    c.JSON(http.StatusOK, list)
-}
+    id := c.Param("id")
+    var updateBook Book
 
-func createFood(c *gin.Context) {
-    var f Food
-    if err := c.ShouldBindJSON(&f); err != nil {
+    if err := c.ShouldBindJSON(&updateBook); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
 
-    err := db.QueryRow(`
-        INSERT INTO foods (sub_category,name,price,description)
-        VALUES ($1,$2,$3,$4)
-        RETURNING id,created_at,updated_at
-    `, f.SubCategory, f.Name, f.Price, f.Description).
-        Scan(&f.ID, &f.CreatedAt, &f.UpdatedAt)
+    var updatedAt time.Time
+    err := db.QueryRow(
+        `UPDATE books
+         SET title = $1, author = $2, isbn = $3, year = $4, price = $5
+         WHERE id = $6
+         RETURNING id, updated_at`,
+        updateBook.Title, updateBook.Author, updateBook.ISBN,
+        updateBook.Year, updateBook.Price, id,
+    ).Scan(&ID, &updatedAt)
 
+    if err == sql.ErrNoRows {
+        c.JSON(http.StatusNotFound, gin.H{"error": "book not found"})
+        return
+    } else if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+	updateBook.ID = ID
+	updateBook.UpdatedAt = updatedAt
+
+	// Log audit
+	userID := c.GetInt("user_id")
+	logAudit(userID, "update", "books", updateBook.ID, gin.H{
+		"title":  updateBook.Title,
+		"author": updateBook.Author,
+	}, c)
+
+	c.JSON(http.StatusOK, updateBook)
+}
+
+func deleteBook(c *gin.Context) {
+    id := c.Param("id")
+
+    result, err := db.Exec("DELETE FROM books WHERE id = $1", id)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
 
-    uid := c.GetInt("user_id")
-    logAudit(uid, "create", "foods", f.ID, gin.H{"name": f.Name}, c)
-
-    c.JSON(http.StatusCreated, f)
-}
-
-// ===================== DESSERTS =====================
-func getAllDesserts(c *gin.Context) {
-    rows, err := db.Query(`
-        SELECT id, sub_category, name, price, description, created_at, updated_at 
-        FROM desserts`)
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-        return
-    }
-    defer rows.Close()
-
-    var list []Dessert
-    for rows.Next() {
-        var d Dessert
-        rows.Scan(&d.ID, &d.SubCategory, &d.Name, &d.Price, &d.Description, &d.CreatedAt, &d.UpdatedAt)
-        list = append(list, d)
-    }
-
-    c.JSON(http.StatusOK, list)
-}
-
-func createDessert(c *gin.Context) {
-    var d Dessert
-    if err := c.ShouldBindJSON(&d); err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-        return
-    }
-
-    err := db.QueryRow(`
-        INSERT INTO desserts (sub_category,name,price,description)
-        VALUES ($1,$2,$3,$4)
-        RETURNING id,created_at,updated_at
-    `, d.SubCategory, d.Name, d.Price, d.Description).
-        Scan(&d.ID, &d.CreatedAt, &d.UpdatedAt)
-
+    rowsAffected, err := result.RowsAffected()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
 
-    uid := c.GetInt("user_id")
-    logAudit(uid, "create", "desserts", d.ID, gin.H{"name": d.Name}, c)
+    if rowsAffected == 0 {
+        c.JSON(http.StatusNotFound, gin.H{"error": "book not found"})
+        return
+    }
 
-    c.JSON(http.StatusCreated, d)
+	// Log audit
+	userID := c.GetInt("user_id")
+	logAudit(userID, "delete", "books", id, nil, c)
+
+    c.JSON(http.StatusOK, gin.H{"message": "book deleted successfully"})
 }
 
-// ===================== Swagger Info =====================
-// @title           Cafe API with Authentication
-// @version         1.0
-// @description     Cafe Menu API with JWT Authentication and RBAC
+// @title           Bookstore API with Authentication
+// @version         2.0
+// @description     Bookstore API with JWT Authentication and RBAC Authorization
 // @host            localhost:8080
 // @BasePath        /api/v1
-
-// ===================== MAIN =====================
 func main() {
-    initDB()
-    defer db.Close()
+	initDB()
+	defer db.Close()
 
-    r := gin.Default()
-    r.Use(cors.Default())
+	r := gin.Default()
+	r.Use(cors.Default())
 
-    // Swagger
-    r.GET("/docs/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+	// ===================== Public Endpoints =====================
+	// Swagger documentation
+	r.GET("/docs/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
-    // Health Check
-    r.GET("/health", func(c *gin.Context) {
-        if err := db.Ping(); err != nil {
-            c.JSON(http.StatusServiceUnavailable, gin.H{"message": "unhealthy"})
-            return
-        }
-        c.JSON(http.StatusOK, gin.H{"message": "healthy"})
-    })
+	// Health check endpoint (for Docker healthcheck)
+	r.GET("/health", func(c *gin.Context){
+		err := db.Ping()
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"message":"unhealthy", "error":err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message" : "healthy"})
+	})
 
-    // AUTH
-    auth := r.Group("/auth")
-    {
-        auth.POST("/login", login)
-        auth.POST("/refresh", refreshTokenHandler)
-        auth.POST("/logout", logout)
-    }
+	// ===================== Authentication Endpoints =====================
+	auth := r.Group("/auth")
+	{
+		auth.POST("/login", login)           // Login และรับ tokens
+		auth.POST("/refresh", refreshTokenHandler)  // Refresh access token
+		auth.POST("/logout", logout)         // Logout และ revoke token
+	}
 
-    // API Protected
-    api := r.Group("/api/v1")
-    api.Use(authMiddleware())
-    {
-        // Drinks
-        api.GET("/drinks", requirePermission("drinks:read"), getAllDrinks)
-        api.POST("/drinks", requirePermission("drinks:create"), createDrink)
+	// ===================== Protected API Endpoints =====================
+	api := r.Group("/api/v1")
+	api.Use(authMiddleware()) // ทุก endpoint ต้อง authenticate
+	{
+		// Books endpoints with permission checks
+		api.GET("/books",
+			requirePermission("books:read"),
+			getAllBooks)
 
-        // Foods
-        api.GET("/foods", requirePermission("foods:read"), getAllFoods)
-        api.POST("/foods", requirePermission("foods:create"), createFood)
+		api.GET("/books/:id",
+			requirePermission("books:read"),
+			getBook)
 
-        // Desserts
-        api.GET("/desserts", requirePermission("desserts:read"), getAllDesserts)
-        api.POST("/desserts", requirePermission("desserts:create"), createDessert)
-    }
+		api.POST("/books",
+			requirePermission("books:create"),
+			createBook)
 
-    r.Run(":8080")
+		api.PUT("/books/:id",
+			requirePermission("books:update"),
+			updateBook)
+
+		api.DELETE("/books/:id",
+			requirePermission("books:delete"),
+			deleteBook)
+	}
+
+	r.Run(":8080")
 }
